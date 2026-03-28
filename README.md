@@ -1,4 +1,4 @@
-# HighHeel Blendshape Generator
+# HighHeel Blendshape Generator for VRoid
 
 A Unity Editor extension that adds foot and toe blendshapes to the Body mesh of VRoid avatars, enabling natural high heel poses.
 
@@ -118,7 +118,7 @@ MIT License
 ---
 ---
 
-# HighHeel Blendshape Generator（日本語）
+# HighHeel Blendshape Generator for VRoid（日本語）
 
 VRoid製VRChatアバターのBodyメッシュに、ハイヒール用のBlendshapeを自動生成するUnityエディタ拡張です。
 
