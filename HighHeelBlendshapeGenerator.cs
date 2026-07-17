@@ -21,6 +21,13 @@ public class HighHeelBlendshapeGenerator : EditorWindow
     private string _blendshapeNameToe  = "HighHeel_ToeBase";
 
     private Vector2 _scroll;
+    private Vector2 _blendshapeScroll;
+
+    private static readonly string[] PREFERRED_MESH_NAMES =
+    {
+        "Body_base", "body_2", "Body"
+    };
+    private const float BLENDSHAPE_LIST_MAX_HEIGHT = 220f;
 
     [MenuItem("Tools/yarihcas1_lab/HighHeel Blendshape Generator(ハイヒール履かせ機)")]
     public static void ShowWindow()
@@ -58,8 +65,12 @@ public class HighHeelBlendshapeGenerator : EditorWindow
         if (_avatarRoot != prevAvatar)
             DetectComponents();
 
+        var prevTargetSMR = _targetSMR;
         _targetSMR = (SkinnedMeshRenderer)EditorGUILayout.ObjectField(
             "対象メッシュ / Target Mesh", _targetSMR, typeof(SkinnedMeshRenderer), true);
+
+        if (_targetSMR != null && _targetSMR != prevTargetSMR)
+            DetectAvatarFromTargetSMR();
 
         EditorGUILayout.Space(4);
         using (new EditorGUI.IndentLevelScope(1))
@@ -92,7 +103,7 @@ public class HighHeelBlendshapeGenerator : EditorWindow
         bool hasToes = HasBothToes();
         bool targetUsesToes = TargetUsesBothToes();
         using (new EditorGUI.DisabledScope(!hasToes))
-            _generateToeBlendshape = EditorGUILayout.Toggle(
+            _generateToeBlendshape = EditorGUILayout.ToggleLeft(
                 "Toes を生成 / Generate Toes", _generateToeBlendshape);
         using (new EditorGUI.DisabledScope(!hasToes || (_targetSMR != null && !targetUsesToes)))
             _toeRotation = EditorGUILayout.Vector3Field("Toes 回転 / Toes Rotation", _toeRotation);
@@ -122,8 +133,15 @@ public class HighHeelBlendshapeGenerator : EditorWindow
         {
             var mesh = _targetSMR.sharedMesh;
             EditorGUILayout.LabelField($"■ 既存 Blendshape ({mesh.blendShapeCount} 個 / items)", EditorStyles.boldLabel);
+
+            float listHeight = Mathf.Min(
+                mesh.blendShapeCount * (EditorGUIUtility.singleLineHeight + EditorGUIUtility.standardVerticalSpacing),
+                BLENDSHAPE_LIST_MAX_HEIGHT);
+            _blendshapeScroll = EditorGUILayout.BeginScrollView(
+                _blendshapeScroll, GUILayout.Height(Mathf.Max(listHeight, EditorGUIUtility.singleLineHeight)));
             for (int i = 0; i < mesh.blendShapeCount; i++)
                 EditorGUILayout.LabelField($"  [{i}] {mesh.GetBlendShapeName(i)}", EditorStyles.miniLabel);
+            EditorGUILayout.EndScrollView();
             EditorGUILayout.Space(8);
         }
 
@@ -158,6 +176,18 @@ public class HighHeelBlendshapeGenerator : EditorWindow
 
         if (_detectedAnimator == null) return;
 
+        foreach (var meshName in PREFERRED_MESH_NAMES)
+        {
+            foreach (var smr in _avatarRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (smr.name == meshName)
+                {
+                    _targetSMR = smr;
+                    return;
+                }
+            }
+        }
+
         Transform leftFoot = GetHumanoidBone(HumanBodyBones.LeftFoot);
         Transform rightFoot = GetHumanoidBone(HumanBodyBones.RightFoot);
         foreach (var smr in _avatarRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
@@ -165,6 +195,26 @@ public class HighHeelBlendshapeGenerator : EditorWindow
             if (RendererUsesBone(smr, leftFoot) && RendererUsesBone(smr, rightFoot))
             {
                 _targetSMR = smr;
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 対象メッシュの親から Humanoid Animator を探してアバターに設定する
+    /// </summary>
+    private void DetectAvatarFromTargetSMR()
+    {
+        _avatarRoot = null;
+        _detectedAnimator = null;
+        if (_targetSMR == null) return;
+
+        foreach (var animator in _targetSMR.GetComponentsInParent<Animator>(true))
+        {
+            if (animator.isHuman)
+            {
+                _avatarRoot = animator.gameObject;
+                _detectedAnimator = animator;
                 return;
             }
         }
