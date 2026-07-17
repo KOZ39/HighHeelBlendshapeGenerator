@@ -3,38 +3,30 @@ using UnityEngine;
 using UnityEditor;
 
 /// <summary>
-/// VRoid製VRChatアバターのBodyメッシュにハイヒール用Blendshapeを追加するエディタ拡張
-/// Tools > yarihcas1_lab > for VRoid > HighHeel Blendshape Generator から開く
+/// Humanoid アバターの SkinnedMeshRenderer にハイヒール用 Blendshape を追加するエディタ拡張
 /// </summary>
 public class HighHeelBlendshapeGenerator : EditorWindow
 {
     // ---- GUI フィールド ----
     private GameObject _avatarRoot;
+    private Animator _detectedAnimator;
+    private SkinnedMeshRenderer _targetSMR;
 
-    // 自動検出結果（GUI表示用）
-    private SkinnedMeshRenderer _detectedSMR;
-    private Transform           _detectedRoot;
-
-    // Foot（左右同時）・ToeBase（左右同時）それぞれの角度
-    private float _footAngle = 30f;    // J_Bip_L/R_Foot    Rotation X (deg)
-    private float _toeAngle  = -30f;   // J_Bip_L/R_ToeBase Rotation X (deg)
+    // Foot / Toes のローカル回転オフセット（左右同時）
+    private Vector3 _footRotation = new Vector3(30f, 0f, 0f);
+    private Vector3 _toeRotation  = new Vector3(-30f, 0f, 0f);
+    private bool _generateToeBlendshape = true;
 
     private string _blendshapeNameFoot = "HighHeel_Foot";
     private string _blendshapeNameToe  = "HighHeel_ToeBase";
 
     private Vector2 _scroll;
 
-    // ---- VRoid 標準ボーン名 ----
-    private const string BONE_FOOT_L = "J_Bip_L_Foot";
-    private const string BONE_FOOT_R = "J_Bip_R_Foot";
-    private const string BONE_TOE_L  = "J_Bip_L_ToeBase";
-    private const string BONE_TOE_R  = "J_Bip_R_ToeBase";
-
-    [MenuItem("Tools/yarihcas1_lab/for VRoid/HighHeel Blendshape Generator(ハイヒール履かせ機)")]
+    [MenuItem("Tools/yarihcas1_lab/HighHeel Blendshape Generator(ハイヒール履かせ機)")]
     public static void ShowWindow()
     {
         var win = GetWindow<HighHeelBlendshapeGenerator>("HighHeel Blendshape");
-        win.minSize = new Vector2(400, 520);
+        win.minSize = new Vector2(420, 560);
     }
 
     // =========================================================
@@ -47,19 +39,17 @@ public class HighHeelBlendshapeGenerator : EditorWindow
         EditorGUILayout.Space(6);
         GUILayout.Label("HighHeel Blendshape Generator", EditorStyles.boldLabel);
         EditorGUILayout.HelpBox(
-            "アバターを指定すると Body メッシュと Root ボーンを自動検出します。\n" +
-            "Foot / ToeBase ボーンを実際に回転させて BakeMesh で差分を取得し、\n" +
-            "左右同時の Blendshape を2つ生成します。\n" +
-            "※ Scene ビュー上にアバターが配置されている必要があります。\n\n" +
-            "Specify the avatar to auto-detect the Body mesh and Root bone.\n" +
-            "Rotates Foot / ToeBase bones and captures deltas via BakeMesh\n" +
-            "to generate 2 blendshapes (both sides simultaneously).\n" +
-            "* Avatar must be placed in the Scene view.",
+            "Humanoid Avatar から Foot / Toes ボーンを取得し、実際に回転させて BakeMesh の差分から Blendshape を生成します。\n" +
+            "Humanoid Avatar bone mapping is used for Foot / Toes. The tool rotates the bones and captures BakeMesh deltas to generate blendshapes.\n\n" +
+            "対象メッシュは自動選択されますが、衣装など別の SkinnedMeshRenderer を指定できます。\n" +
+            "The target mesh is selected automatically, but you can choose another SkinnedMeshRenderer such as clothing.\n\n" +
+            "※ アバターは Scene 上に配置され、Humanoid Avatar が設定されている必要があります。\n" +
+            "* The avatar must be placed in the Scene and configured as a Humanoid Avatar.",
             MessageType.Info);
 
         EditorGUILayout.Space(8);
 
-        // ---- アバター指定 ----
+        // ---- ターゲット ----
         EditorGUILayout.LabelField("■ ターゲット / Target", EditorStyles.boldLabel);
         var prevAvatar = _avatarRoot;
         _avatarRoot = (GameObject)EditorGUILayout.ObjectField(
@@ -68,67 +58,81 @@ public class HighHeelBlendshapeGenerator : EditorWindow
         if (_avatarRoot != prevAvatar)
             DetectComponents();
 
-        // 検出結果の表示
+        _targetSMR = (SkinnedMeshRenderer)EditorGUILayout.ObjectField(
+            "対象メッシュ / Target Mesh", _targetSMR, typeof(SkinnedMeshRenderer), true);
+
         EditorGUILayout.Space(4);
         using (new EditorGUI.IndentLevelScope(1))
         {
-            if (_avatarRoot == null)
-            {
-                EditorGUILayout.LabelField("Body SMR : —", EditorStyles.miniLabel);
-                EditorGUILayout.LabelField("Root     : —", EditorStyles.miniLabel);
-            }
-            else
-            {
-                var smrStyle = _detectedSMR != null ? EditorStyles.miniLabel : GetRedMiniLabel();
-                string smrText = _detectedSMR != null
-                    ? $"Body SMR : {GetPath(_avatarRoot.transform, _detectedSMR.transform)}"
-                    : "Body SMR : 見つかりません / Not found";
-                EditorGUILayout.LabelField(smrText, smrStyle);
+            bool isHumanoid = _detectedAnimator != null && _detectedAnimator.isHuman;
+            var animatorStyle = isHumanoid ? EditorStyles.miniLabel : GetRedMiniLabel();
+            string animatorText = isHumanoid
+                ? "Humanoid Animator : " + GetPath(_avatarRoot != null ? _avatarRoot.transform : null, _detectedAnimator.transform)
+                : "Humanoid Animator : 見つかりません / Not found";
+            EditorGUILayout.LabelField(animatorText, animatorStyle);
 
-                var rootStyle = _detectedRoot != null ? EditorStyles.miniLabel : GetRedMiniLabel();
-                string rootText = _detectedRoot != null
-                    ? $"Root     : {GetPath(_avatarRoot.transform, _detectedRoot)}"
-                    : "Root     : 見つかりません / Not found";
-                EditorGUILayout.LabelField(rootText, rootStyle);
-            }
+            var meshStyle = _targetSMR != null && _targetSMR.sharedMesh != null
+                ? EditorStyles.miniLabel : GetRedMiniLabel();
+            string meshText = _targetSMR != null && _targetSMR.sharedMesh != null
+                ? "Target Mesh : " + GetPath(_avatarRoot != null ? _avatarRoot.transform : null, _targetSMR.transform)
+                : "Target Mesh : 見つかりません / Not found";
+            EditorGUILayout.LabelField(meshText, meshStyle);
         }
 
         EditorGUILayout.Space(8);
 
-        // ---- 角度設定 ----
-        EditorGUILayout.LabelField("■ 角度設定（左右同時）/ Angle Settings (Both Sides)", EditorStyles.boldLabel);
-        _footAngle = EditorGUILayout.Slider("Foot Rotation X（両足）",    _footAngle,  0f,   60f);
-        _toeAngle  = EditorGUILayout.Slider("ToeBase Rotation X（両足）", _toeAngle,  -60f,   0f);
+        // ---- 回転設定 ----
+        EditorGUILayout.LabelField("■ 回転設定（左右同時）/ Rotation Settings (Both Sides)", EditorStyles.boldLabel);
+        EditorGUILayout.HelpBox(
+            "リグごとにローカル軸の向きが異なるため、必要に応じて XYZ を調整してください。\n" +
+            "Local axes differ by rig. Adjust XYZ values as needed.",
+            MessageType.None);
+        _footRotation = EditorGUILayout.Vector3Field("Foot 回転 / Foot Rotation", _footRotation);
+
+        bool hasToes = HasBothToes();
+        bool targetUsesToes = TargetUsesBothToes();
+        using (new EditorGUI.DisabledScope(!hasToes))
+            _generateToeBlendshape = EditorGUILayout.Toggle(
+                "Toes を生成 / Generate Toes", _generateToeBlendshape);
+        using (new EditorGUI.DisabledScope(!hasToes || (_targetSMR != null && !targetUsesToes)))
+            _toeRotation = EditorGUILayout.Vector3Field("Toes 回転 / Toes Rotation", _toeRotation);
+        if (!hasToes)
+            EditorGUILayout.HelpBox(
+                "Toes ボーンが両側にないため、Foot Blendshape のみ生成します。\n" +
+                "Both Toes bones were not found, so only the Foot blendshape will be generated.",
+                MessageType.Warning);
+        else if (_targetSMR != null && !targetUsesToes)
+            EditorGUILayout.HelpBox(
+                "対象メッシュは Toes ボーンを使用していないため、Toes Blendshape を生成できません。\n" +
+                "The target mesh does not use the Toes bones, so a Toes blendshape cannot be generated.",
+                MessageType.Warning);
 
         EditorGUILayout.Space(8);
 
         // ---- Blendshape 名 ----
         EditorGUILayout.LabelField("■ Blendshape 名 / Blendshape Names", EditorStyles.boldLabel);
-        _blendshapeNameFoot = EditorGUILayout.TextField("Foot 用 / For Foot",       _blendshapeNameFoot);
-        _blendshapeNameToe  = EditorGUILayout.TextField("ToeBase 用 / For ToeBase", _blendshapeNameToe);
+        _blendshapeNameFoot = EditorGUILayout.TextField("Foot 用 / For Foot", _blendshapeNameFoot);
+        using (new EditorGUI.DisabledScope(!_generateToeBlendshape || !hasToes))
+            _blendshapeNameToe = EditorGUILayout.TextField("ToeBase 用 / For ToeBase", _blendshapeNameToe);
 
         EditorGUILayout.Space(12);
 
         // ---- 既存 Blendshape 一覧 ----
-        if (_detectedSMR != null && _detectedSMR.sharedMesh != null)
+        if (_targetSMR != null && _targetSMR.sharedMesh != null)
         {
-            var mesh  = _detectedSMR.sharedMesh;
-            int count = mesh.blendShapeCount;
-            EditorGUILayout.LabelField($"■ 既存 Blendshape ({count} 個 / items)", EditorStyles.boldLabel);
-            for (int i = 0; i < count; i++)
+            var mesh = _targetSMR.sharedMesh;
+            EditorGUILayout.LabelField($"■ 既存 Blendshape ({mesh.blendShapeCount} 個 / items)", EditorStyles.boldLabel);
+            for (int i = 0; i < mesh.blendShapeCount; i++)
                 EditorGUILayout.LabelField($"  [{i}] {mesh.GetBlendShapeName(i)}", EditorStyles.miniLabel);
             EditorGUILayout.Space(8);
         }
 
-        // ---- 実行ボタン ----
+        // ---- Blendshape 生成 ----
         EditorGUILayout.LabelField("■ Blendshape 生成 / Generate", EditorStyles.boldLabel);
-        GUI.enabled = _detectedSMR != null
-                      && !string.IsNullOrEmpty(_blendshapeNameFoot)
-                      && !string.IsNullOrEmpty(_blendshapeNameToe);
-
+        bool canGenerate = CanGenerate();
+        GUI.enabled = canGenerate;
         if (GUILayout.Button("Blendshape を生成して保存 / Generate & Save", GUILayout.Height(36)))
             Generate();
-
         GUI.enabled = true;
 
         EditorGUILayout.EndScrollView();
@@ -139,18 +143,30 @@ public class HighHeelBlendshapeGenerator : EditorWindow
     // =========================================================
     private void DetectComponents()
     {
-        _detectedSMR  = null;
-        _detectedRoot = null;
+        _detectedAnimator = null;
+        _targetSMR = null;
         if (_avatarRoot == null) return;
 
-        foreach (var smr in _avatarRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        foreach (var animator in _avatarRoot.GetComponentsInChildren<Animator>(true))
         {
-            if (smr.name == "Body") { _detectedSMR = smr; break; }
+            if (animator.isHuman)
+            {
+                _detectedAnimator = animator;
+                break;
+            }
         }
 
-        foreach (Transform t in _avatarRoot.GetComponentsInChildren<Transform>(true))
+        if (_detectedAnimator == null) return;
+
+        Transform leftFoot = GetHumanoidBone(HumanBodyBones.LeftFoot);
+        Transform rightFoot = GetHumanoidBone(HumanBodyBones.RightFoot);
+        foreach (var smr in _avatarRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
         {
-            if (t.name == "Root") { _detectedRoot = t; break; }
+            if (RendererUsesBone(smr, leftFoot) && RendererUsesBone(smr, rightFoot))
+            {
+                _targetSMR = smr;
+                return;
+            }
         }
     }
 
@@ -159,74 +175,70 @@ public class HighHeelBlendshapeGenerator : EditorWindow
     // =========================================================
     private void Generate()
     {
-        var smr  = _detectedSMR;
-        var mesh = smr != null ? smr.sharedMesh : null;
-
-        if (mesh == null)
+        if (!CanGenerate())
         {
             EditorUtility.DisplayDialog(
                 "エラー / Error",
-                "Mesh が見つかりません。\nMesh not found.", "OK");
+                "Humanoid Avatar、対象メッシュ、Foot ボーンを確認してください。\n" +
+                "Please check the Humanoid Avatar, target mesh, and Foot bones.", "OK");
             return;
         }
 
-        // 重複チェック
-        var newNames = new HashSet<string> { _blendshapeNameFoot, _blendshapeNameToe };
+        var smr = _targetSMR;
+        var mesh = smr.sharedMesh;
+        Transform footL = GetHumanoidBone(HumanBodyBones.LeftFoot);
+        Transform footR = GetHumanoidBone(HumanBodyBones.RightFoot);
+        Transform toesL = GetHumanoidBone(HumanBodyBones.LeftToes);
+        Transform toesR = GetHumanoidBone(HumanBodyBones.RightToes);
+        bool generateToes = _generateToeBlendshape && toesL != null && toesR != null;
+
+        var newNames = new HashSet<string> { _blendshapeNameFoot };
+        if (generateToes) newNames.Add(_blendshapeNameToe);
+
+        if (newNames.Count != (generateToes ? 2 : 1))
+        {
+            EditorUtility.DisplayDialog(
+                "エラー / Error",
+                "Blendshape 名が重複しています。\nBlendshape names must be unique.", "OK");
+            return;
+        }
+
         for (int i = 0; i < mesh.blendShapeCount; i++)
         {
-            string n = mesh.GetBlendShapeName(i);
-            if (newNames.Contains(n))
+            string name = mesh.GetBlendShapeName(i);
+            if (newNames.Contains(name))
             {
                 if (!EditorUtility.DisplayDialog(
                     "上書き確認 / Overwrite Confirmation",
-                    $"'{n}' はすでに存在します。\n同名の Blendshape を削除して再生成しますか？\n\n" +
-                    $"'{n}' already exists.\nDelete and regenerate the blendshape with the same name?",
+                    $"'{name}' はすでに存在します。\n同名の Blendshape を削除して再生成しますか？\n\n" +
+                    $"'{name}' already exists.\nDelete and regenerate the blendshape with the same name?",
                     "上書き / Overwrite", "キャンセル / Cancel"))
                     return;
                 break;
             }
         }
 
-        // ---- ボーン Transform を SMR.bones から取得 ----
-        Transform tfFootL = FindBoneTransform(smr, BONE_FOOT_L);
-        Transform tfFootR = FindBoneTransform(smr, BONE_FOOT_R);
-        Transform tfToeL  = FindBoneTransform(smr, BONE_TOE_L);
-        Transform tfToeR  = FindBoneTransform(smr, BONE_TOE_R);
-
-        foreach ((Transform tf, string name) in new[]
+        var originalRotations = new Dictionary<Transform, Quaternion>
         {
-            (tfFootL, BONE_FOOT_L), (tfFootR, BONE_FOOT_R),
-            (tfToeL,  BONE_TOE_L),  (tfToeR,  BONE_TOE_R)
-        })
+            { footL, footL.localRotation },
+            { footR, footR.localRotation }
+        };
+        if (generateToes)
         {
-            if (tf == null)
-            {
-                EditorUtility.DisplayDialog(
-                    "エラー / Error",
-                    $"ボーン '{name}' が見つかりません。\n" +
-                    "VRoid 標準のアバターを選択してください。\n\n" +
-                    $"Bone '{name}' not found.\n" +
-                    "Please select a VRoid standard avatar.", "OK");
-                return;
-            }
+            originalRotations.Add(toesL, toesL.localRotation);
+            originalRotations.Add(toesR, toesR.localRotation);
         }
 
-        // ---- ベースポーズを退避 ----
-        Quaternion origFootL = tfFootL.localRotation;
-        Quaternion origFootR = tfFootR.localRotation;
-        Quaternion origToeL  = tfToeL.localRotation;
-        Quaternion origToeR  = tfToeR.localRotation;
-
-        Matrix4x4 worldToLocal = smr.transform.worldToLocalMatrix;
-        int vCount = mesh.vertexCount;
-
         var tempMesh = new Mesh();
+        Mesh newMesh = null;
+        float[] savedWeights = null;
+        bool createdAsset = false;
 
         try
         {
-            // ---- ① 既存 Blendshape weight を退避・ゼロ化してクリーンなベースをベイク ----
-            int bsCount = smr.sharedMesh.blendShapeCount;
-            var savedWeights = new float[bsCount];
+            // ---- 既存 Blendshape weight を退避・ゼロ化 ----
+            int bsCount = mesh.blendShapeCount;
+            savedWeights = new float[bsCount];
             for (int i = 0; i < bsCount; i++)
             {
                 savedWeights[i] = smr.GetBlendShapeWeight(i);
@@ -234,95 +246,87 @@ public class HighHeelBlendshapeGenerator : EditorWindow
             }
 
             smr.BakeMesh(tempMesh);
-            var baseVerts = GetLocalVertices(tempMesh, worldToLocal);
+            var baseVerts = GetBakedVertices(tempMesh);
 
-            // ---- ② Foot 左右同時回転 → ベイク → 元に戻す ----
-            tfFootL.localRotation = origFootL * Quaternion.Euler(_footAngle, 0f, 0f);
-            tfFootR.localRotation = origFootR * Quaternion.Euler(_footAngle, 0f, 0f);
-
+            // ---- Foot 左右同時回転 → Bake ----
+            footL.localRotation = originalRotations[footL] * Quaternion.Euler(_footRotation);
+            footR.localRotation = originalRotations[footR] * Quaternion.Euler(_footRotation);
             smr.BakeMesh(tempMesh);
-            var bakedFoot = GetLocalVertices(tempMesh, worldToLocal);
+            var bakedFoot = GetBakedVertices(tempMesh);
+            footL.localRotation = originalRotations[footL];
+            footR.localRotation = originalRotations[footR];
 
-            tfFootL.localRotation = origFootL;
-            tfFootR.localRotation = origFootR;
-
-            // ---- ③ ToeBase 左右同時回転 → ベイク → 元に戻す ----
-            tfToeL.localRotation = origToeL * Quaternion.Euler(_toeAngle, 0f, 0f);
-            tfToeR.localRotation = origToeR * Quaternion.Euler(_toeAngle, 0f, 0f);
-
-            smr.BakeMesh(tempMesh);
-            var bakedToe = GetLocalVertices(tempMesh, worldToLocal);
-
-            tfToeL.localRotation = origToeL;
-            tfToeR.localRotation = origToeR;
-
-            // Blendshape weight を復元
-            for (int i = 0; i < bsCount; i++)
-                smr.SetBlendShapeWeight(i, savedWeights[i]);
-
-            // ---- ④ デルタ計算 ----
-            var deltaFoot = new Vector3[vCount];
-            var deltaToe  = new Vector3[vCount];
-            var zeroN     = new Vector3[vCount];
-            var zeroT     = new Vector3[vCount];
-
-            for (int vi = 0; vi < vCount; vi++)
+            Vector3[] bakedToe = null;
+            if (generateToes)
             {
-                deltaFoot[vi] = bakedFoot[vi] - baseVerts[vi];
-                deltaToe[vi]  = bakedToe[vi]  - baseVerts[vi];
+                // ---- Toes 左右同時回転 → Bake ----
+                toesL.localRotation = originalRotations[toesL] * Quaternion.Euler(_toeRotation);
+                toesR.localRotation = originalRotations[toesR] * Quaternion.Euler(_toeRotation);
+                smr.BakeMesh(tempMesh);
+                bakedToe = GetBakedVertices(tempMesh);
+                toesL.localRotation = originalRotations[toesL];
+                toesR.localRotation = originalRotations[toesR];
             }
 
-            // ---- ⑤ 新規 Mesh に Blendshape を追加 ----
-            Mesh newMesh = DuplicateMeshWithoutBlendshapes(mesh, newNames);
-            newMesh.AddBlendShapeFrame(_blendshapeNameFoot, 100f, deltaFoot, zeroN, zeroT);
-            newMesh.AddBlendShapeFrame(_blendshapeNameToe,  100f, deltaToe,  zeroN, zeroT);
+            var deltaFoot = CalculateDelta(baseVerts, bakedFoot);
+            var zeroN = new Vector3[mesh.vertexCount];
+            var zeroT = new Vector3[mesh.vertexCount];
 
-            // ---- ⑥ 保存 ----
+            // ---- 新規 Mesh に Blendshape を追加 ----
+            newMesh = DuplicateMeshWithoutBlendshapes(mesh, newNames);
+            newMesh.AddBlendShapeFrame(_blendshapeNameFoot, 100f, deltaFoot, zeroN, zeroT);
+            if (generateToes)
+                newMesh.AddBlendShapeFrame(_blendshapeNameToe, 100f,
+                    CalculateDelta(baseVerts, bakedToe), zeroN, zeroT);
+
+            // ---- 保存 ----
             string defaultName = mesh.name + "_HighHeel";
-            string defaultDir  = "Assets";
-            string srcPath     = AssetDatabase.GetAssetPath(mesh);
+            string defaultDir = "Assets";
+            string srcPath = AssetDatabase.GetAssetPath(mesh);
             if (!string.IsNullOrEmpty(srcPath))
                 defaultDir = System.IO.Path.GetDirectoryName(srcPath);
 
             string assetPath = EditorUtility.SaveFilePanelInProject(
                 "新規 Mesh を保存 / Save New Mesh", defaultName, "asset",
                 "保存先を選択してください / Choose save location", defaultDir);
-
-            if (string.IsNullOrEmpty(assetPath))
-            {
-                DestroyImmediate(newMesh);
-                return;
-            }
+            if (string.IsNullOrEmpty(assetPath)) return;
 
             newMesh.name = System.IO.Path.GetFileNameWithoutExtension(assetPath);
             AssetDatabase.CreateAsset(newMesh, assetPath);
+            createdAsset = true;
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
             smr.sharedMesh = newMesh;
             EditorUtility.SetDirty(smr);
 
+            string toesResult = generateToes
+                ? $"\n  {_blendshapeNameToe}  (Toes / both {_toeRotation})"
+                : string.Empty;
             EditorUtility.DisplayDialog(
                 "完了 / Done",
-                $"新規 Mesh を生成し Blendshape を追加しました。\n" +
-                $"New mesh generated with blendshapes added.\n\n" +
-                $"  {_blendshapeNameFoot}  (Foot  両足 / both {_footAngle}°)\n" +
-                $"  {_blendshapeNameToe}   (Toe   両足 / both {_toeAngle}°)\n\n" +
-                $"保存先 / Saved to: {assetPath}",
-                "OK");
+                "新規 Mesh を生成し Blendshape を追加しました。\n" +
+                "New mesh generated with blendshapes added.\n\n" +
+                $"  {_blendshapeNameFoot}  (Foot / both {_footRotation})" + toesResult +
+                $"\n\n保存先 / Saved to: {assetPath}", "OK");
         }
         catch (System.Exception e)
         {
-            tfFootL.localRotation = origFootL;
-            tfFootR.localRotation = origFootR;
-            tfToeL.localRotation  = origToeL;
-            tfToeR.localRotation  = origToeR;
             EditorUtility.DisplayDialog("エラー / Error", e.Message, "OK");
             throw;
         }
         finally
         {
-            DestroyImmediate(tempMesh);
+            // ---- 回転と weight を必ず復元 ----
+            foreach (var pair in originalRotations)
+                pair.Key.localRotation = pair.Value;
+            if (savedWeights != null)
+            {
+                for (int i = 0; i < savedWeights.Length; i++)
+                    smr.SetBlendShapeWeight(i, savedWeights[i]);
+            }
+            if (tempMesh != null) DestroyImmediate(tempMesh);
+            if (newMesh != null && !createdAsset) DestroyImmediate(newMesh);
         }
 
         Repaint();
@@ -331,28 +335,69 @@ public class HighHeelBlendshapeGenerator : EditorWindow
     // =========================================================
     //  ユーティリティ
     // =========================================================
-
-    /// <summary>
-    /// SMR の bones 配列から名前でボーン Transform を探す
-    /// </summary>
-    private static Transform FindBoneTransform(SkinnedMeshRenderer smr, string boneName)
+    private bool CanGenerate()
     {
-        foreach (var bone in smr.bones)
-            if (bone != null && bone.name == boneName)
-                return bone;
-        return null;
+        if (_detectedAnimator == null || !_detectedAnimator.isHuman || _targetSMR == null || _targetSMR.sharedMesh == null)
+            return false;
+        if (string.IsNullOrEmpty(_blendshapeNameFoot)) return false;
+        if (_generateToeBlendshape && HasBothToes() && string.IsNullOrEmpty(_blendshapeNameToe)) return false;
+
+        Transform footL = GetHumanoidBone(HumanBodyBones.LeftFoot);
+        Transform footR = GetHumanoidBone(HumanBodyBones.RightFoot);
+        if (!RendererUsesBone(_targetSMR, footL) || !RendererUsesBone(_targetSMR, footR)) return false;
+        return !_generateToeBlendshape || !HasBothToes() || TargetUsesBothToes();
+    }
+
+    private bool HasBothToes()
+    {
+        if (_detectedAnimator == null || !_detectedAnimator.isHuman) return false;
+        return GetHumanoidBone(HumanBodyBones.LeftToes) != null
+               && GetHumanoidBone(HumanBodyBones.RightToes) != null;
+    }
+
+    private bool TargetUsesBothToes()
+    {
+        return RendererUsesBone(_targetSMR, GetHumanoidBone(HumanBodyBones.LeftToes))
+               && RendererUsesBone(_targetSMR, GetHumanoidBone(HumanBodyBones.RightToes));
+    }
+
+    private Transform GetHumanoidBone(HumanBodyBones bone)
+    {
+        return _detectedAnimator != null && _detectedAnimator.isHuman
+            ? _detectedAnimator.GetBoneTransform(bone) : null;
     }
 
     /// <summary>
-    /// BakeMesh で得た Mesh の頂点をワールド→ローカル変換してローカル座標配列で返す
+    /// 指定 Transform が SMR の bones 配列に含まれるかを返す
     /// </summary>
-    private static Vector3[] GetLocalVertices(Mesh bakedMesh, Matrix4x4 worldToLocal)
+    private static bool RendererUsesBone(SkinnedMeshRenderer smr, Transform bone)
     {
-        var worldVerts = bakedMesh.vertices;
-        var localVerts = new Vector3[worldVerts.Length];
-        for (int i = 0; i < worldVerts.Length; i++)
-            localVerts[i] = worldToLocal.MultiplyPoint3x4(worldVerts[i]);
-        return localVerts;
+        if (smr == null || bone == null) return false;
+        foreach (var rendererBone in smr.bones)
+            if (rendererBone == bone) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// BakeMesh で得た Renderer ローカル座標の頂点配列をコピーして返す
+    /// </summary>
+    private static Vector3[] GetBakedVertices(Mesh bakedMesh)
+    {
+        var vertices = bakedMesh.vertices;
+        var copy = new Vector3[vertices.Length];
+        System.Array.Copy(vertices, copy, vertices.Length);
+        return copy;
+    }
+
+    private static Vector3[] CalculateDelta(Vector3[] baseVerts, Vector3[] bakedVerts)
+    {
+        if (baseVerts == null || bakedVerts == null || baseVerts.Length != bakedVerts.Length)
+            throw new System.InvalidOperationException("BakeMesh vertex counts do not match.");
+
+        var delta = new Vector3[baseVerts.Length];
+        for (int i = 0; i < delta.Length; i++)
+            delta[i] = bakedVerts[i] - baseVerts[i];
+        return delta;
     }
 
     /// <summary>
@@ -364,7 +409,7 @@ public class HighHeelBlendshapeGenerator : EditorWindow
         dst.name = src.name;
         dst.ClearBlendShapes();
 
-        int count  = src.blendShapeCount;
+        int count = src.blendShapeCount;
         var deltaV = new Vector3[src.vertexCount];
         var deltaN = new Vector3[src.vertexCount];
         var deltaT = new Vector3[src.vertexCount];
@@ -382,24 +427,26 @@ public class HighHeelBlendshapeGenerator : EditorWindow
                 dst.AddBlendShapeFrame(shapeName, weight, deltaV, deltaN, deltaT);
             }
         }
-
         return dst;
     }
 
     /// <summary>
-    /// アバタールートからの相対パスを返す
+    /// アバタールートからの相対パスを返す。ルート外の Transform にも対応する
     /// </summary>
     private static string GetPath(Transform root, Transform target)
     {
+        if (target == null) return "—";
+        if (root == null) return target.name;
         if (target == root) return root.name;
-        var parts = new System.Collections.Generic.Stack<string>();
-        var t = target;
-        while (t != null && t != root)
+
+        var parts = new Stack<string>();
+        var current = target;
+        while (current != null && current != root)
         {
-            parts.Push(t.name);
-            t = t.parent;
+            parts.Push(current.name);
+            current = current.parent;
         }
-        return string.Join("/", parts);
+        return current == root ? string.Join("/", parts) : target.name;
     }
 
     /// <summary>
